@@ -1,36 +1,47 @@
+from collections import defaultdict
 from sqllineage.runner import LineageRunner
 import sqlglot
 from sqlglot import exp
 
 
-def extract_table_columns(sql_text):
-    result = {}
+def normalize_table_name(table_expr):
+    schema = table_expr.db
+    table = table_expr.name
 
-    try:
-        tree = sqlglot.parse_one(sql_text)
-    except Exception:
-        return result
+    if schema:
+        return schema, table, f"{schema}.{table}"
 
+    return "", table, table
+
+
+def collect_aliases(statement):
     alias_map = {}
+    tables = {}
 
-    # Build alias -> table map
-    for table in tree.find_all(exp.Table):
-        table_name = table.name
-        schema = table.db
-
-        full_name = f"{schema}.{table_name}" if schema else table_name
+    for table in statement.find_all(exp.Table):
+        schema, table_name, full_name = normalize_table_name(table)
 
         alias = None
         if table.alias:
-            alias = table.alias
+            alias = str(table.alias)
 
-        alias_map[alias or table_name] = full_name
+        tables[full_name] = {
+            "schema": schema,
+            "table": table_name
+        }
 
-        if full_name not in result:
-            result[full_name] = set()
+        alias_map[table_name] = full_name
 
-    # Extract columns
-    for col in tree.find_all(exp.Column):
+        if alias:
+            alias_map[alias] = full_name
+
+    return alias_map, tables
+
+
+def collect_columns(statement, alias_map, tables):
+    result = defaultdict(set)
+
+    for col in statement.find_all(exp.Column):
         col_name = col.name
 
         if not col_name:
@@ -40,19 +51,45 @@ def extract_table_columns(sql_text):
 
         if table_alias:
             if table_alias in alias_map:
-                result[alias_map[table_alias]].add(col_name)
+                full_table = alias_map[table_alias]
+                result[full_table].add(col_name)
+
         else:
-            # single table fallback
-            if len(result) == 1:
-                only_table = next(iter(result))
+            if len(tables) == 1:
+                only_table = next(iter(tables.keys()))
                 result[only_table].add(col_name)
 
-    return {k: sorted(list(v)) for k, v in result.items()}
+    return result
+
+
+def extract_table_columns(sql_text):
+    merged = defaultdict(set)
+
+    try:
+        statements = sqlglot.parse(sql_text)
+    except Exception:
+        return {}
+
+    for statement in statements:
+        alias_map, tables = collect_aliases(statement)
+
+        cols = collect_columns(statement, alias_map, tables)
+
+        for table_name, columns in cols.items():
+            merged[table_name].update(columns)
+
+        for table_name in tables:
+            merged.setdefault(table_name, set())
+
+    final = {}
+
+    for table_name, columns in merged.items():
+        final[table_name] = sorted(columns)
+
+    return final
 
 
 def parse_sql(sql_text: str):
-    runner = LineageRunner(sql_text)
-
     data = {
         "sources": [],
         "targets": [],
@@ -62,25 +99,39 @@ def parse_sql(sql_text: str):
     }
 
     try:
-        data["sources"] = sorted(str(t) for t in runner.source_tables)
-    except:
-        pass
+        runner = LineageRunner(sql_text)
 
-    try:
-        data["targets"] = sorted(str(t) for t in runner.target_tables)
-    except:
-        pass
+        try:
+            data["sources"] = sorted(
+                str(t) for t in runner.source_tables
+            )
+        except Exception:
+            pass
 
-    try:
-        data["intermediate"] = sorted(str(t) for t in runner.intermediate_tables)
-    except:
-        pass
+        try:
+            data["targets"] = sorted(
+                str(t) for t in runner.target_tables
+            )
+        except Exception:
+            pass
 
-    try:
-        cols = runner.column_lineage
-        if cols:
-            data["column_lineage"] = [str(c) for c in cols]
-    except:
+        try:
+            data["intermediate"] = sorted(
+                str(t) for t in runner.intermediate_tables
+            )
+        except Exception:
+            pass
+
+        try:
+            cols = runner.column_lineage
+            if cols:
+                data["column_lineage"] = [
+                    str(c) for c in cols
+                ]
+        except Exception:
+            pass
+
+    except Exception:
         pass
 
     data["table_columns"] = extract_table_columns(sql_text)
