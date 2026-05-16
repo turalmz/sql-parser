@@ -1,83 +1,78 @@
 from sqllineage.runner import LineageRunner
-import re
+import sqlglot
+from sqlglot import exp
 
 
-def extract_columns(sql_text):
-    sql = re.sub(r"\s+", " ", sql_text.strip(), flags=re.MULTILINE)
+def extract_table_columns(sql_text):
+    result = {}
+
+    try:
+        tree = sqlglot.parse_one(sql_text)
+    except Exception:
+        return result
 
     alias_map = {}
-    table_columns = {}
 
-    # FROM / JOIN alias mapping
-    alias_pattern = re.finditer(
-        r"(FROM|JOIN)\s+([a-zA-Z0-9_.]+)(?:\s+([a-zA-Z0-9_]+))?",
-        sql,
-        re.IGNORECASE
-    )
+    # Build alias -> table map
+    for table in tree.find_all(exp.Table):
+        table_name = table.name
+        schema = table.db
 
-    tables = []
+        full_name = f"{schema}.{table_name}" if schema else table_name
 
-    for match in alias_pattern:
-        table = match.group(2)
-        alias = match.group(3)
+        alias = None
+        if table.alias:
+            alias = table.alias
 
-        tables.append(table)
+        alias_map[alias or table_name] = full_name
 
-        if alias:
-            alias_map[alias] = table
+        if full_name not in result:
+            result[full_name] = set()
 
-        table_columns.setdefault(table, [])
+    # Extract columns
+    for col in tree.find_all(exp.Column):
+        col_name = col.name
 
-    # Extract SELECT ... FROM
-    select_match = re.search(
-        r"SELECT\s+(.*?)\s+FROM\s",
-        sql,
-        re.IGNORECASE
-    )
+        if not col_name:
+            continue
 
-    if not select_match:
-        return table_columns
+        table_alias = col.table
 
-    select_part = select_match.group(1)
-    columns = [c.strip() for c in select_part.split(",")]
-
-    for col in columns:
-        # remove aliases
-        col = re.sub(r"\s+AS\s+.+$", "", col, flags=re.IGNORECASE)
-
-        # alias.column
-        if "." in col:
-            alias, column = col.split(".", 1)
-
-            alias = alias.strip()
-            column = column.strip()
-
-            if alias in alias_map:
-                table_columns[alias_map[alias]].append(column)
-
+        if table_alias:
+            if table_alias in alias_map:
+                result[alias_map[table_alias]].add(col_name)
         else:
             # single table fallback
-            if len(tables) == 1:
-                table_columns[tables[0]].append(col)
+            if len(result) == 1:
+                only_table = next(iter(result))
+                result[only_table].add(col_name)
 
-    return table_columns
+    return {k: sorted(list(v)) for k, v in result.items()}
 
 
 def parse_sql(sql_text: str):
     runner = LineageRunner(sql_text)
 
     data = {
-        "sources": sorted(str(t) for t in runner.source_tables),
-        "targets": sorted(str(t) for t in runner.target_tables),
+        "sources": [],
+        "targets": [],
         "intermediate": [],
         "column_lineage": [],
         "table_columns": {}
     }
 
     try:
-        data["intermediate"] = sorted(
-            str(t) for t in runner.intermediate_tables
-        )
+        data["sources"] = sorted(str(t) for t in runner.source_tables)
+    except:
+        pass
+
+    try:
+        data["targets"] = sorted(str(t) for t in runner.target_tables)
+    except:
+        pass
+
+    try:
+        data["intermediate"] = sorted(str(t) for t in runner.intermediate_tables)
     except:
         pass
 
@@ -88,6 +83,6 @@ def parse_sql(sql_text: str):
     except:
         pass
 
-    data["table_columns"] = extract_columns(sql_text)
+    data["table_columns"] = extract_table_columns(sql_text)
 
     return data
