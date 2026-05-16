@@ -86,7 +86,7 @@ class MainWindow(QMainWindow):
         right_split = QSplitter(Qt.Vertical)
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["SQLLineage Output"])
+        self.tree.setHeaderLabels(["SQL Metadata"])
         right_split.addWidget(self.tree)
 
         self.graph = GraphWidget()
@@ -95,7 +95,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_split)
 
         splitter.setSizes([700, 900])
-        right_split.setSizes([300, 600])
+        right_split.setSizes([400, 500])
 
         root.addWidget(splitter)
 
@@ -131,24 +131,29 @@ class MainWindow(QMainWindow):
 
         try:
             self.data = parse_sql(sql)
-
             self.tree.clear()
 
-            for category in [
-                "sources",
-                "targets",
-                "intermediate",
-                "column_lineage"
-            ]:
-                items = self.data.get(category, [])
+            sources_root = QTreeWidgetItem(["Source Tables"])
 
-                root = QTreeWidgetItem([f"{category} ({len(items)})"])
+            for table, columns in self.data.get("table_columns", {}).items():
+                table_item = QTreeWidgetItem([table])
 
-                for item in items:
-                    root.addChild(QTreeWidgetItem([item]))
+                for col in columns:
+                    table_item.addChild(QTreeWidgetItem([col]))
 
-                root.setExpanded(True)
-                self.tree.addTopLevelItem(root)
+                sources_root.addChild(table_item)
+
+            sources_root.setExpanded(True)
+            self.tree.addTopLevelItem(sources_root)
+
+            if self.data.get("targets"):
+                targets_root = QTreeWidgetItem(["Target Tables"])
+
+                for t in self.data["targets"]:
+                    targets_root.addChild(QTreeWidgetItem([t]))
+
+                targets_root.setExpanded(True)
+                self.tree.addTopLevelItem(targets_root)
 
             self.graph.render_graph(self.data)
 
