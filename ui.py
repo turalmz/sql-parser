@@ -6,12 +6,13 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QPushButton,
     QFileDialog,
-    QSplitter,
     QMessageBox,
     QLabel,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QHeaderView
+    QHeaderView,
+    QLineEdit
 )
 
 from PySide6.QtCore import Qt
@@ -28,38 +29,43 @@ class MainWindow(QMainWindow):
         self.data = {}
 
         self.setWindowTitle("SQL Metadata Explorer")
-        self.resize(1700, 950)
+        self.resize(1800, 1000)
 
         self.setStyleSheet("""
             QWidget {
-                background: #1e1e1e;
+                background-color: #1e1e1e;
                 color: #eaeaea;
                 font-size: 13px;
             }
 
-            QTextEdit, QTableWidget {
-                background: #252526;
+            QTextEdit, QTableWidget, QLineEdit {
+                background-color: #252526;
                 border: 1px solid #3a3a3a;
-                gridline-color: #3a3a3a;
+                color: #ffffff;
             }
 
             QHeaderView::section {
-                background: #333333;
+                background-color: #333333;
                 color: white;
                 padding: 8px;
-                border: 1px solid #444;
+                border: 1px solid #444444;
                 font-weight: bold;
             }
 
             QPushButton {
-                background: #0e639c;
+                background-color: #0e639c;
                 border: none;
                 padding: 10px;
                 border-radius: 6px;
+                color: white;
             }
 
             QPushButton:hover {
-                background: #1177bb;
+                background-color: #1177bb;
+            }
+
+            QLineEdit {
+                padding: 8px;
             }
         """)
 
@@ -89,31 +95,47 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Horizontal)
 
-        # LEFT: SQL editor
         self.editor = QTextEdit()
         self.editor.setPlaceholderText("Paste SQL here...")
         splitter.addWidget(self.editor)
 
-        # RIGHT
         right_split = QSplitter(Qt.Vertical)
 
-        # ORACLE STYLE TABLE
+        top_panel = QWidget()
+        top_layout = QVBoxLayout(top_panel)
+
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText(
+            "Search schema / table / column..."
+        )
+
+        top_layout.addWidget(self.search_box)
+
         self.table = QTableWidget()
         self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Schema", "Table", "Column"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setHorizontalHeaderLabels(
+            ["Schema", "Table", "Column"]
+        )
+
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch
+        )
+
+        self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(True)
 
-        right_split.addWidget(self.table)
+        top_layout.addWidget(self.table)
 
-        # GRAPH
+        right_split.addWidget(top_panel)
+
         self.graph = GraphWidget()
         right_split.addWidget(self.graph)
 
         splitter.addWidget(right_split)
 
-        splitter.setSizes([700, 1000])
-        right_split.setSizes([500, 400])
+        splitter.setSizes([700, 1100])
+        right_split.setSizes([600, 350])
 
         root.addWidget(splitter)
 
@@ -125,6 +147,7 @@ class MainWindow(QMainWindow):
         self.csv_btn.clicked.connect(self.save_csv)
         self.json_btn.clicked.connect(self.save_json)
         self.img_btn.clicked.connect(self.save_image)
+        self.search_box.textChanged.connect(self.filter_table)
 
     def open_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -135,58 +158,121 @@ class MainWindow(QMainWindow):
         )
 
         if path:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            with open(
+                path,
+                "r",
+                encoding="utf-8",
+                errors="ignore"
+            ) as f:
                 self.editor.setPlainText(f.read())
 
             self.status.setText(f"Loaded: {path}")
-
-    def split_table_name(self, full_name):
-        if "." in full_name:
-            parts = full_name.split(".", 1)
-            return parts[0], parts[1]
-        return "", full_name
 
     def parse(self):
         sql = self.editor.toPlainText().strip()
 
         if not sql:
-            QMessageBox.warning(self, "Empty", "Paste SQL first.")
+            QMessageBox.warning(
+                self,
+                "Empty",
+                "Paste SQL first."
+            )
             return
 
         try:
             self.data = parse_sql(sql)
-
-            self.table.setRowCount(0)
-
-            row = 0
-
-            for table_name, columns in self.data.get("table_columns", {}).items():
-                schema, table = self.split_table_name(table_name)
-
-                if not columns:
-                    self.table.insertRow(row)
-                    self.table.setItem(row, 0, QTableWidgetItem(schema))
-                    self.table.setItem(row, 1, QTableWidgetItem(table))
-                    self.table.setItem(row, 2, QTableWidgetItem("(no columns found)"))
-                    row += 1
-                    continue
-
-                for col in columns:
-                    self.table.insertRow(row)
-                    self.table.setItem(row, 0, QTableWidgetItem(schema))
-                    self.table.setItem(row, 1, QTableWidgetItem(table))
-                    self.table.setItem(row, 2, QTableWidgetItem(col))
-                    row += 1
-
+            self.populate_table()
             self.graph.render_graph(self.data)
 
-            self.status.setText(
-                f"Parse complete - {self.table.rowCount()} metadata rows"
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Parse Error",
+                str(e)
             )
 
-        except Exception as e:
-            QMessageBox.critical(self, "Parse Error", str(e))
-            self.status.setText("Parse failed")
+    def populate_table(self):
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+
+        row = 0
+
+        for full_table, columns in self.data.get(
+            "table_columns",
+            {}
+        ).items():
+
+            if "." in full_table:
+                schema, table = full_table.split(".", 1)
+            else:
+                schema = ""
+                table = full_table
+
+            if not columns:
+                self.table.insertRow(row)
+
+                self.table.setItem(
+                    row,
+                    0,
+                    QTableWidgetItem(schema)
+                )
+                self.table.setItem(
+                    row,
+                    1,
+                    QTableWidgetItem(table)
+                )
+                self.table.setItem(
+                    row,
+                    2,
+                    QTableWidgetItem("")
+                )
+
+                row += 1
+                continue
+
+            for col in columns:
+                self.table.insertRow(row)
+
+                self.table.setItem(
+                    row,
+                    0,
+                    QTableWidgetItem(schema)
+                )
+
+                self.table.setItem(
+                    row,
+                    1,
+                    QTableWidgetItem(table)
+                )
+
+                self.table.setItem(
+                    row,
+                    2,
+                    QTableWidgetItem(col)
+                )
+
+                row += 1
+
+        self.table.setSortingEnabled(True)
+
+        self.status.setText(
+            f"Parse complete — {self.table.rowCount()} rows"
+        )
+
+    def filter_table(self, text):
+        text = text.lower()
+
+        for row in range(self.table.rowCount()):
+            visible = False
+
+            for col in range(self.table.columnCount()):
+                item = self.table.item(row, col)
+
+                if item and text in item.text().lower():
+                    visible = True
+                    break
+
+            self.table.setRowHidden(row, not visible)
 
     def save_csv(self):
         if not self.data:
