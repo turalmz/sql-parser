@@ -6,11 +6,12 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QPushButton,
     QFileDialog,
-    QTreeWidget,
-    QTreeWidgetItem,
     QSplitter,
     QMessageBox,
-    QLabel
+    QLabel,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView
 )
 
 from PySide6.QtCore import Qt
@@ -26,8 +27,8 @@ class MainWindow(QMainWindow):
 
         self.data = {}
 
-        self.setWindowTitle("SQLLineage Desktop")
-        self.resize(1600, 950)
+        self.setWindowTitle("SQL Metadata Explorer")
+        self.resize(1700, 950)
 
         self.setStyleSheet("""
             QWidget {
@@ -36,9 +37,18 @@ class MainWindow(QMainWindow):
                 font-size: 13px;
             }
 
-            QTextEdit, QTreeWidget {
+            QTextEdit, QTableWidget {
                 background: #252526;
                 border: 1px solid #3a3a3a;
+                gridline-color: #3a3a3a;
+            }
+
+            QHeaderView::section {
+                background: #333333;
+                color: white;
+                padding: 8px;
+                border: 1px solid #444;
+                font-weight: bold;
             }
 
             QPushButton {
@@ -79,23 +89,31 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Horizontal)
 
+        # LEFT: SQL editor
         self.editor = QTextEdit()
         self.editor.setPlaceholderText("Paste SQL here...")
         splitter.addWidget(self.editor)
 
+        # RIGHT
         right_split = QSplitter(Qt.Vertical)
 
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["SQL Metadata"])
-        right_split.addWidget(self.tree)
+        # ORACLE STYLE TABLE
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Schema", "Table", "Column"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setAlternatingRowColors(True)
 
+        right_split.addWidget(self.table)
+
+        # GRAPH
         self.graph = GraphWidget()
         right_split.addWidget(self.graph)
 
         splitter.addWidget(right_split)
 
-        splitter.setSizes([700, 900])
-        right_split.setSizes([400, 500])
+        splitter.setSizes([700, 1000])
+        right_split.setSizes([500, 400])
 
         root.addWidget(splitter)
 
@@ -122,6 +140,12 @@ class MainWindow(QMainWindow):
 
             self.status.setText(f"Loaded: {path}")
 
+    def split_table_name(self, full_name):
+        if "." in full_name:
+            parts = full_name.split(".", 1)
+            return parts[0], parts[1]
+        return "", full_name
+
     def parse(self):
         sql = self.editor.toPlainText().strip()
 
@@ -131,33 +155,34 @@ class MainWindow(QMainWindow):
 
         try:
             self.data = parse_sql(sql)
-            self.tree.clear()
 
-            sources_root = QTreeWidgetItem(["Source Tables"])
+            self.table.setRowCount(0)
 
-            for table, columns in self.data.get("table_columns", {}).items():
-                table_item = QTreeWidgetItem([table])
+            row = 0
+
+            for table_name, columns in self.data.get("table_columns", {}).items():
+                schema, table = self.split_table_name(table_name)
+
+                if not columns:
+                    self.table.insertRow(row)
+                    self.table.setItem(row, 0, QTableWidgetItem(schema))
+                    self.table.setItem(row, 1, QTableWidgetItem(table))
+                    self.table.setItem(row, 2, QTableWidgetItem("(no columns found)"))
+                    row += 1
+                    continue
 
                 for col in columns:
-                    table_item.addChild(QTreeWidgetItem([col]))
-
-                sources_root.addChild(table_item)
-
-            sources_root.setExpanded(True)
-            self.tree.addTopLevelItem(sources_root)
-
-            if self.data.get("targets"):
-                targets_root = QTreeWidgetItem(["Target Tables"])
-
-                for t in self.data["targets"]:
-                    targets_root.addChild(QTreeWidgetItem([t]))
-
-                targets_root.setExpanded(True)
-                self.tree.addTopLevelItem(targets_root)
+                    self.table.insertRow(row)
+                    self.table.setItem(row, 0, QTableWidgetItem(schema))
+                    self.table.setItem(row, 1, QTableWidgetItem(table))
+                    self.table.setItem(row, 2, QTableWidgetItem(col))
+                    row += 1
 
             self.graph.render_graph(self.data)
 
-            self.status.setText("Parse complete")
+            self.status.setText(
+                f"Parse complete - {self.table.rowCount()} metadata rows"
+            )
 
         except Exception as e:
             QMessageBox.critical(self, "Parse Error", str(e))
