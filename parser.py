@@ -16,86 +16,84 @@ class SQLMetadataParser:
 
         try:
             statements = sqlglot.parse(sql_text)
-        except Exception:
+        except Exception as e:
             return {
-                "table_columns": {},
-                "relationships": []
+                "tables": {},
+                "relationships": [],
+                "error": str(e)
             }
 
         for stmt in statements:
-            self.collect_ctes(stmt)
-            self.walk_statement(stmt)
+            self._collect_ctes(stmt)
+            self._walk(stmt)
 
-        filtered = {}
+        filtered_tables = {}
 
         for table, cols in self.table_columns.items():
             short = table.split(".")[-1]
-
             if short in self.cte_names:
                 continue
-
-            filtered[table] = sorted(cols)
+            filtered_tables[table] = sorted(cols)
 
         filtered_relationships = []
 
         for rel in self.relationships:
-            left_table = rel["left_table"].split(".")[-1]
-            right_table = rel["right_table"].split(".")[-1]
+            lt = rel["left_table"].split(".")[-1]
+            rt = rel["right_table"].split(".")[-1]
 
-            if left_table in self.cte_names:
+            if lt in self.cte_names:
                 continue
-
-            if right_table in self.cte_names:
+            if rt in self.cte_names:
                 continue
 
             filtered_relationships.append(rel)
 
         return {
-            "table_columns": filtered,
-            "relationships": filtered_relationships
+            "tables": filtered_tables,
+            "relationships": filtered_relationships,
+            "error": None
         }
 
-    def collect_ctes(self, node):
+    def _collect_ctes(self, node):
         for cte in node.find_all(exp.CTE):
             if cte.alias:
                 self.cte_names.add(str(cte.alias))
 
-    def walk_statement(self, node):
+    def _walk(self, node):
         alias_map = {}
-        self.collect_tables(node, alias_map)
-        self.collect_columns(node, alias_map)
-        self.collect_relationships(node, alias_map)
+        self._collect_tables(node, alias_map)
+        self._collect_columns(node, alias_map)
+        self._collect_relationships(node, alias_map)
 
-    def collect_tables(self, node, alias_map):
+    def _collect_tables(self, node, alias_map):
         for table in node.find_all(exp.Table):
             table_name = table.name
             schema = table.db
 
-            full = f"{schema}.{table_name}" if schema else table_name
+            full_name = f"{schema}.{table_name}" if schema else table_name
 
-            alias_map[table_name] = full
+            alias_map[table_name] = full_name
 
             if table.alias:
-                alias_map[str(table.alias)] = full
+                alias_map[str(table.alias)] = full_name
 
-            self.table_columns.setdefault(full, set())
+            self.table_columns.setdefault(full_name, set())
 
-    def collect_columns(self, node, alias_map):
+    def _collect_columns(self, node, alias_map):
         for col in node.find_all(exp.Column):
-            name = col.name
-            alias = col.table
-
-            if not name:
+            if not col.name:
                 continue
 
+            alias = col.table
+
             if alias and alias in alias_map:
-                self.table_columns[alias_map[alias]].add(name)
+                self.table_columns[alias_map[alias]].add(col.name)
 
             elif len(alias_map) == 1:
                 only_table = next(iter(alias_map.values()))
-                self.table_columns[only_table].add(name)
+                self.table_columns[only_table].add(col.name)
 
-    def collect_relationships(self, node, alias_map):
+    def _collect_relationships(self, node, alias_map):
         for eq in node.find_all(exp.EQ):
             left = eq.left
             right = eq.right
@@ -106,24 +104,24 @@ class SQLMetadataParser:
             if not isinstance(right, exp.Column):
                 continue
 
-            left_alias = left.table
-            right_alias = right.table
-
-            if not left_alias or not right_alias:
+            if not left.table or not right.table:
                 continue
 
-            if left_alias not in alias_map:
+            if left.table not in alias_map:
                 continue
 
-            if right_alias not in alias_map:
+            if right.table not in alias_map:
                 continue
 
-            self.relationships.append({
-                "left_table": alias_map[left_alias],
+            rel = {
+                "left_table": alias_map[left.table],
                 "left_column": left.name,
-                "right_table": alias_map[right_alias],
+                "right_table": alias_map[right.table],
                 "right_column": right.name
-            })
+            }
+
+            if rel not in self.relationships:
+                self.relationships.append(rel)
 
 
 def parse_sql(sql_text):
