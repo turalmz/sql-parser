@@ -20,17 +20,17 @@ class GraphWidget(QWidget):
 
         layout = QVBoxLayout(self)
 
-        self.label = QLabel("No diagram yet")
+        self.label = QLabel("No ER diagram yet")
         self.label.setAlignment(Qt.AlignCenter)
 
         layout.addWidget(self.label)
 
-    def draw_table_box(self, ax, x, y, width, columns, table_name):
-        header_height = 0.8
-        row_height = 0.45
-        total_height = header_height + (len(columns) * row_height)
+    def draw_entity(self, ax, x, y, table_name, columns):
+        header_height = 0.7
+        row_height = 0.38
+        width = 4.8
+        total_height = header_height + max(1, len(columns)) * row_height
 
-        # Outer rectangle
         rect = Rectangle(
             (x, y - total_height),
             width,
@@ -40,27 +40,29 @@ class GraphWidget(QWidget):
         )
         ax.add_patch(rect)
 
-        # Header separator
         ax.plot(
             [x, x + width],
             [y - header_height, y - header_height],
             linewidth=1.2
         )
 
-        # Table name
         ax.text(
             x + width / 2,
-            y - 0.4,
+            y - 0.35,
             table_name,
             ha="center",
             va="center",
-            fontsize=10,
+            fontsize=9,
             fontweight="bold"
         )
 
-        # Columns
-        for i, col in enumerate(columns):
-            cy = y - header_height - (i * row_height) - 0.22
+        column_positions = {}
+
+        if not columns:
+            columns = ["(no columns)"]
+
+        for idx, col in enumerate(columns):
+            cy = y - header_height - (idx * row_height) - 0.2
 
             ax.text(
                 x + 0.15,
@@ -68,114 +70,108 @@ class GraphWidget(QWidget):
                 col,
                 ha="left",
                 va="center",
-                fontsize=9
+                fontsize=8
             )
 
-        return total_height
+            column_positions[col] = (x + width, cy)
+
+        return {
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": total_height,
+            "columns": column_positions
+        }
 
     def render_graph(self, data):
-        table_columns = data.get("table_columns", {})
+        tables = data.get("table_columns", {})
+        relationships = data.get("relationships", [])
 
-        if not table_columns:
-            self.label.setText("No metadata available")
+        if not tables:
+            self.label.setText("No ER metadata available")
             self.label.setPixmap(QPixmap())
             return
 
         fd, path = tempfile.mkstemp(suffix=".png")
         os.close(fd)
 
-        fig, ax = plt.subplots(figsize=(14, 8))
-
+        fig, ax = plt.subplots(figsize=(16, 9))
         ax.axis("off")
 
-        table_names = list(table_columns.keys())
-        positions = {}
+        layout_positions = {}
+        table_names = list(tables.keys())
 
-        x = 1
-        y = 10
-        spacing_x = 5.5
+        spacing_x = 6.5
+        spacing_y = 5
+        cols_per_row = 3
 
-        # Draw boxes
         for idx, table_name in enumerate(table_names):
-            cols = table_columns[table_name]
+            row = idx // cols_per_row
+            col = idx % cols_per_row
 
-            if not cols:
-                cols = ["(no columns)"]
+            x = 1 + col * spacing_x
+            y = 11 - row * spacing_y
 
-            px = x + (idx * spacing_x)
-            py = y
-
-            positions[table_name] = (px, py)
-
-            self.draw_table_box(
+            layout_positions[table_name] = self.draw_entity(
                 ax,
-                px,
-                py,
-                4.5,
-                cols,
-                table_name
+                x,
+                y,
+                table_name,
+                tables[table_name]
             )
 
-        # Draw relationships
-        sources = set(data.get("sources", []))
-        targets = set(data.get("targets", []))
-        intermediates = set(data.get("intermediate", []))
+        for rel in relationships:
+            lt = rel["left_table"]
+            lc = rel["left_column"]
+            rt = rel["right_table"]
+            rc = rel["right_column"]
 
-        # source -> target
-        for s in sources:
-            for t in targets:
-                if s in positions and t in positions:
-                    sx, sy = positions[s]
-                    tx, ty = positions[t]
+            if lt not in layout_positions:
+                continue
 
-                    ax.annotate(
-                        "",
-                        xy=(tx, ty - 1),
-                        xytext=(sx + 4.5, sy - 1),
-                        arrowprops=dict(arrowstyle="->", linewidth=1.5)
-                    )
+            if rt not in layout_positions:
+                continue
 
-        # source -> intermediate
-        for s in sources:
-            for i in intermediates:
-                if s in positions and i in positions:
-                    sx, sy = positions[s]
-                    ix, iy = positions[i]
+            left_info = layout_positions[lt]
+            right_info = layout_positions[rt]
 
-                    ax.annotate(
-                        "",
-                        xy=(ix, iy - 1),
-                        xytext=(sx + 4.5, sy - 1),
-                        arrowprops=dict(arrowstyle="->", linewidth=1.2)
-                    )
+            if lc not in left_info["columns"]:
+                continue
 
-        # intermediate -> target
-        for i in intermediates:
-            for t in targets:
-                if i in positions and t in positions:
-                    ix, iy = positions[i]
-                    tx, ty = positions[t]
+            if rc not in right_info["columns"]:
+                continue
 
-                    ax.annotate(
-                        "",
-                        xy=(tx, ty - 1),
-                        xytext=(ix + 4.5, iy - 1),
-                        arrowprops=dict(arrowstyle="->", linewidth=1.2)
-                    )
+            sx, sy = left_info["columns"][lc]
+            tx = right_info["x"]
+            ty = right_info["columns"][rc][1]
 
-        ax.set_xlim(0, max(10, len(table_names) * spacing_x + 3))
+            ax.annotate(
+                "",
+                xy=(tx, ty),
+                xytext=(sx, sy),
+                arrowprops=dict(
+                    arrowstyle="->",
+                    linewidth=1.3
+                )
+            )
+
+        ax.set_xlim(0, 22)
         ax.set_ylim(0, 12)
 
         plt.tight_layout()
-        plt.savefig(path, dpi=160, bbox_inches="tight")
+        plt.savefig(
+            path,
+            dpi=160,
+            bbox_inches="tight"
+        )
         plt.close()
 
         self.current_image = path
 
         self.label.setPixmap(
             QPixmap(path).scaled(
-                1200,
-                600,
+                1300,
+                650,
                 Qt.KeepAspectRatio,
                 Qt.SmoothTransformation
             )
@@ -183,4 +179,7 @@ class GraphWidget(QWidget):
 
     def export_image(self, output_path):
         if self.current_image:
-            shutil.copyfile(self.current_image, output_path)
+            shutil.copyfile(
+                self.current_image,
+                output_path
+            )
