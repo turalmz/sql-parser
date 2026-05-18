@@ -12,21 +12,58 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
-    QLineEdit
+    QLineEdit,
+    QFrame
 )
 
 from PySide6.QtCore import Qt
 
 from parser import parse_sql
-from exporter import export_csv, export_json
-from graph_view import GraphWidget
+from sql_highlighter import SQLHighlighter
+
+
+class MetricCard(QFrame):
+    def __init__(self, title):
+        super().__init__()
+
+        self.setStyleSheet("""
+            QFrame {
+                background-color: #252526;
+                border: 1px solid #3a3a3a;
+                border-radius: 10px;
+            }
+
+            QLabel {
+                color: white;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+
+        self.title = QLabel(title)
+        self.title.setStyleSheet("""
+            font-size: 11px;
+            color: #aaaaaa;
+        """)
+
+        self.value = QLabel("0")
+        self.value.setStyleSheet("""
+            font-size: 22px;
+            font-weight: bold;
+        """)
+
+        layout.addWidget(self.title)
+        layout.addWidget(self.value)
+
+    def set_value(self, value):
+        self.value.setText(str(value))
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.data = {}
+        self.data = None
 
         self.setWindowTitle("SQL Metadata Explorer")
         self.resize(1800, 1000)
@@ -34,88 +71,122 @@ class MainWindow(QMainWindow):
         self.setStyleSheet("""
             QWidget {
                 background-color: #1e1e1e;
-                color: #eaeaea;
+                color: white;
                 font-size: 13px;
             }
 
             QTextEdit, QTableWidget, QLineEdit {
                 background-color: #252526;
                 border: 1px solid #3a3a3a;
-                color: #ffffff;
-            }
-
-            QHeaderView::section {
-                background-color: #333333;
                 color: white;
-                padding: 8px;
-                border: 1px solid #444444;
-                font-weight: bold;
+                border-radius: 8px;
             }
 
             QPushButton {
                 background-color: #0e639c;
                 border: none;
-                padding: 10px;
-                border-radius: 6px;
+                padding: 12px;
+                border-radius: 8px;
                 color: white;
+                font-weight: bold;
             }
 
             QPushButton:hover {
                 background-color: #1177bb;
             }
 
-            QLineEdit {
-                padding: 8px;
+            QHeaderView::section {
+                background-color: #333333;
+                color: white;
+                padding: 10px;
+                font-weight: bold;
+                border: none;
             }
         """)
 
         central = QWidget()
         self.setCentralWidget(central)
 
-        root = QVBoxLayout(central)
+        root = QHBoxLayout(central)
 
-        toolbar = QHBoxLayout()
+        # SIDEBAR
+        sidebar = QFrame()
+        sidebar.setFixedWidth(300)
+        sidebar.setStyleSheet("""
+            QFrame {
+                background-color: #161616;
+                border-right: 1px solid #2d2d2d;
+            }
+        """)
+
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setSpacing(16)
+
+        title = QLabel("SQL Metadata Explorer")
+        title.setStyleSheet("""
+            font-size: 20px;
+            font-weight: bold;
+        """)
+
+        sidebar_layout.addWidget(title)
 
         self.open_btn = QPushButton("Open SQL File")
-        self.parse_btn = QPushButton("Parse")
-        self.csv_btn = QPushButton("Export CSV")
-        self.json_btn = QPushButton("Export JSON")
-        self.img_btn = QPushButton("Export Graph")
+        self.parse_btn = QPushButton("Parse SQL")
 
-        for btn in [
-            self.open_btn,
-            self.parse_btn,
-            self.csv_btn,
-            self.json_btn,
-            self.img_btn
-        ]:
-            toolbar.addWidget(btn)
+        sidebar_layout.addWidget(self.open_btn)
+        sidebar_layout.addWidget(self.parse_btn)
 
-        root.addLayout(toolbar)
+        search_label = QLabel("Search")
+        search_label.setStyleSheet("""
+            font-size: 14px;
+            color: #aaaaaa;
+        """)
 
-        splitter = QSplitter(Qt.Horizontal)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(
+            "schema / table / column..."
+        )
+
+        sidebar_layout.addWidget(search_label)
+        sidebar_layout.addWidget(self.search)
+
+        summary = QLabel("Summary")
+        summary.setStyleSheet("""
+            font-size: 14px;
+            color: #aaaaaa;
+        """)
+
+        sidebar_layout.addWidget(summary)
+
+        self.tables_card = MetricCard("Tables")
+        self.columns_card = MetricCard("Columns")
+        self.relations_card = MetricCard("Relationships")
+
+        sidebar_layout.addWidget(self.tables_card)
+        sidebar_layout.addWidget(self.columns_card)
+        sidebar_layout.addWidget(self.relations_card)
+
+        sidebar_layout.addStretch()
+
+        root.addWidget(sidebar)
+
+        # MAIN CONTENT
+        content = QSplitter(Qt.Vertical)
 
         self.editor = QTextEdit()
         self.editor.setPlaceholderText("Paste SQL here...")
-        splitter.addWidget(self.editor)
+        SQLHighlighter(self.editor.document())
 
-        right_split = QSplitter(Qt.Vertical)
-
-        top_panel = QWidget()
-        top_layout = QVBoxLayout(top_panel)
-
-        self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText(
-            "Search schema / table / column..."
-        )
-
-        top_layout.addWidget(self.search_box)
+        content.addWidget(self.editor)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(
-            ["Schema", "Table", "Column"]
-        )
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels([
+            "Schema",
+            "Table",
+            "Column",
+            "Related To"
+        ])
 
         self.table.horizontalHeader().setSectionResizeMode(
             QHeaderView.Stretch
@@ -123,55 +194,33 @@ class MainWindow(QMainWindow):
 
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
-        self.table.verticalHeader().setVisible(True)
 
-        top_layout.addWidget(self.table)
+        content.addWidget(self.table)
 
-        right_split.addWidget(top_panel)
+        content.setSizes([450, 500])
 
-        self.graph = GraphWidget()
-        right_split.addWidget(self.graph)
-
-        splitter.addWidget(right_split)
-
-        splitter.setSizes([700, 1100])
-        right_split.setSizes([600, 350])
-
-        root.addWidget(splitter)
-
-        self.status = QLabel("Ready")
-        root.addWidget(self.status)
+        root.addWidget(content)
 
         self.open_btn.clicked.connect(self.open_file)
         self.parse_btn.clicked.connect(self.parse)
-        self.csv_btn.clicked.connect(self.save_csv)
-        self.json_btn.clicked.connect(self.save_json)
-        self.img_btn.clicked.connect(self.save_image)
-        self.search_box.textChanged.connect(self.filter_table)
+        self.search.textChanged.connect(self.filter_rows)
 
     def open_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Open SQL",
             "",
-            "SQL Files (*.sql);;All Files (*)"
+            "SQL Files (*.sql)"
         )
 
         if path:
-            with open(
-                path,
-                "r",
-                encoding="utf-8",
-                errors="ignore"
-            ) as f:
+            with open(path, "r", encoding="utf-8") as f:
                 self.editor.setPlainText(f.read())
 
-            self.status.setText(f"Loaded: {path}")
-
     def parse(self):
-        sql = self.editor.toPlainText().strip()
+        sql = self.editor.toPlainText()
 
-        if not sql:
+        if not sql.strip():
             QMessageBox.warning(
                 self,
                 "Empty",
@@ -179,87 +228,71 @@ class MainWindow(QMainWindow):
             )
             return
 
-        try:
-            self.data = parse_sql(sql)
-            self.populate_table()
-            self.graph.render_graph(self.data)
+        self.data = parse_sql(sql)
 
-        except Exception as e:
+        if self.data["error"]:
             QMessageBox.critical(
                 self,
                 "Parse Error",
-                str(e)
+                self.data["error"]
             )
+            return
 
-    def populate_table(self):
+        self.populate()
+
+    def populate(self):
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
 
+        relationships = self.data["relationships"]
+        relation_lookup = {}
+
+        for rel in relationships:
+            relation_lookup[
+                (rel["left_table"], rel["left_column"])
+            ] = (
+                f'{rel["right_table"]}.{rel["right_column"]}'
+            )
+
         row = 0
 
-        for full_table, columns in self.data.get(
-            "table_columns",
-            {}
-        ).items():
-
+        for full_table, cols in self.data["tables"].items():
             if "." in full_table:
                 schema, table = full_table.split(".", 1)
             else:
                 schema = ""
                 table = full_table
 
-            if not columns:
+            for col in cols:
                 self.table.insertRow(row)
 
-                self.table.setItem(
-                    row,
-                    0,
-                    QTableWidgetItem(schema)
-                )
-                self.table.setItem(
-                    row,
-                    1,
-                    QTableWidgetItem(table)
-                )
-                self.table.setItem(
-                    row,
-                    2,
-                    QTableWidgetItem("")
-                )
-
-                row += 1
-                continue
-
-            for col in columns:
-                self.table.insertRow(row)
-
-                self.table.setItem(
-                    row,
-                    0,
-                    QTableWidgetItem(schema)
+                related = relation_lookup.get(
+                    (full_table, col),
+                    ""
                 )
 
                 self.table.setItem(
-                    row,
-                    1,
-                    QTableWidgetItem(table)
+                    row, 0, QTableWidgetItem(schema)
                 )
-
                 self.table.setItem(
-                    row,
-                    2,
-                    QTableWidgetItem(col)
+                    row, 1, QTableWidgetItem(table)
+                )
+                self.table.setItem(
+                    row, 2, QTableWidgetItem(col)
+                )
+                self.table.setItem(
+                    row, 3, QTableWidgetItem(related)
                 )
 
                 row += 1
 
         self.table.setSortingEnabled(True)
 
-        self.status.setText(
-            f"Parse complete — {self.table.rowCount()} rows"
-        )
+        self.tables_card.set_value(len(self.data["tables"]))
+        self.columns_card.set_value(self.table.rowCount())
+        self.relations_card.set_value(len(relationships))
 
-    def filter_table(self, text):
+    def filter_rows(self, text):
         text = text.lower()
 
         for row in range(self.table.rowCount()):
@@ -273,42 +306,3 @@ class MainWindow(QMainWindow):
                     break
 
             self.table.setRowHidden(row, not visible)
-
-    def save_csv(self):
-        if not self.data:
-            return
-
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save CSV",
-            "",
-            "CSV (*.csv)"
-        )
-
-        if path:
-            export_csv(path, self.data)
-
-    def save_json(self):
-        if not self.data:
-            return
-
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save JSON",
-            "",
-            "JSON (*.json)"
-        )
-
-        if path:
-            export_json(path, self.data)
-
-    def save_image(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save PNG",
-            "",
-            "PNG (*.png)"
-        )
-
-        if path:
-            self.graph.export_image(path)
